@@ -1,12 +1,20 @@
 package com.booksearch.controllers;
 
+import com.itextpdf.kernel.pdf.PdfDocument;
+import com.itextpdf.kernel.pdf.PdfPage;
+import com.itextpdf.kernel.pdf.PdfReader;
+import com.itextpdf.kernel.pdf.canvas.parser.PdfTextExtractor;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.SolrQuery;
 import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.impl.HttpSolrClient;
 import org.apache.solr.client.solrj.request.AbstractUpdateRequest;
 import org.apache.solr.client.solrj.request.ContentStreamUpdateRequest;
+import org.apache.solr.client.solrj.request.UpdateRequest;
 import org.apache.solr.client.solrj.response.QueryResponse;
+import org.apache.solr.client.solrj.response.UpdateResponse;
+import org.apache.solr.common.SolrDocument;
+import org.apache.solr.common.SolrInputDocument;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.handler.extraction.ExtractingParams;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,21 +23,14 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
-import java.io.IOException;
-import java.time.LocalDateTime;
 
 @RestController
 public class SearchController {
-
-    @Value("${solr.url}demo")
-    private String url;
-    private String collectionName;
-
     private SolrClient solr;
 
     public SearchController() {
         solr = new HttpSolrClient.Builder()
-                .withBaseSolrUrl("http://localhost:8983/solr/demo")
+                .withBaseSolrUrl("http://localhost:8983/solr/books")
                 .withConnectionTimeout(10000)
                 .withSocketTimeout(60000)
                 .allowCompression(true)
@@ -41,42 +42,70 @@ public class SearchController {
         ResponseEntity<String> response;
 
         try {
-            ContentStreamUpdateRequest req = new ContentStreamUpdateRequest("/update/extract");
-
             String fileSuffix = ".pdf";
 
             File tempFile = File.createTempFile("temp", fileSuffix);
 
             file.transferTo(tempFile);
 
-            req.addFile(tempFile,"application/pdf");
+            UpdateResponse res = null;
+            PdfReader reader = new PdfReader(tempFile);
+            PdfDocument pdfDocument = new PdfDocument(reader);
 
-            req.setParam(ExtractingParams.EXTRACT_ONLY, "true");
-            NamedList<Object> result = solr.request(req);
+            int pageCount = pdfDocument.getNumberOfPages();
 
-            response = ResponseEntity.accepted().body(result.toString());
+            for (int i = 1; i <= pageCount; i++) {
+                SolrInputDocument doc = new SolrInputDocument();
+                doc.addField("page", i);
+
+                // Extracting the content from a particular page
+                String pageText = PdfTextExtractor.getTextFromPage(pdfDocument.getPage(i));
+                doc.addField("text", pageText);
+
+                doc.addField("title", pdfDocument.getDocumentInfo().getTitle());
+                doc.addField("author", pdfDocument.getDocumentInfo().getAuthor());
+
+                solr.add(doc);
+
+                if (i % 100 == 0) res = solr.commit();  // periodically flush
+            }
+
+            res = solr.commit();
+
+            reader.close();
+
+            response = ResponseEntity.accepted().body(res.toString());
         } catch (Exception e) {
             response = ResponseEntity.badRequest().body("Request processing error: " + e.getMessage());
         }
+
         return response;
     }
 
-    @RequestMapping(path = "/search/{query}/{page}/{size}", method = RequestMethod.GET)
-    public ResponseEntity<String> searchByQuery(@RequestParam("query") String userQuery,
+    @RequestMapping(path = "/search/{query}", method = RequestMethod.GET)
+    public ResponseEntity<String> searchByQuery(@PathVariable("query") String userQuery/*,
                                                 @RequestParam("page") int pageNr,
-                                                @RequestParam("size") int pageSize) {
+                                                @RequestParam("size") int pageSize*/) {
         ResponseEntity<String> response;
 
         try {
             SolrQuery query = new SolrQuery().setQuery(userQuery)
-                                            .addSort("lastUpdatedAt", SolrQuery.ORDER.asc)
-                                            .setFacet(true)
-                                            .setStart(pageNr)
-                                            .setRows(pageSize);
+                                            //.addSort("author", SolrQuery.ORDER.asc)
+                                            .setFacet(true);
+                                            //.setStart(pageNr)
+                                            //.setRows(pageSize);
 
             QueryResponse queryResponse = solr.query(query);
 
-            response = ResponseEntity.ok(queryResponse.getResults().toString());
+            if (queryResponse.getResults().size() == 0) throw new Exception("No results found");
+
+            StringBuilder solrResults = new StringBuilder();
+
+            for (SolrDocument elem : queryResponse.getResults()) {
+                solrResults.append(elem.getFieldValue("book_content"));
+            }
+
+            response = ResponseEntity.ok(solrResults.toString());
         } catch (Exception e) {
             response = ResponseEntity.badRequest().body("Request processing error: " + e.getMessage());
         }
