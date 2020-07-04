@@ -1,5 +1,5 @@
 # BookSearch
-Search engine for books (Apache Solr, IText 7, Java 8, VueJS)
+Search engine for books (Elasticsearch, IText 7, Java 8, VueJS)
 
 ## Requirements
 * API will expose an endpoint which accepts the search query and returns the page results
